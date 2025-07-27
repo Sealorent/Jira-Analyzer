@@ -1,0 +1,9 @@
+streamlit
+pandas
+gspread
+requests
+google-generativeai
+scikit-learn
+numpy
+openpyxl
+python-dotenv
