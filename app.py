@@ -31,10 +31,38 @@ def get_config_value(key, default_value=''):
     """Get configuration value from Streamlit secrets or environment variables"""
     # Try Streamlit secrets first (for cloud deployment)
     try:
-        return st.secrets[key]
+        value = st.secrets[key]
+        logger.info(f"✅ Found {key} in Streamlit secrets (length: {len(str(value)) if value else 0})")
+        return value
     except (KeyError, AttributeError):
         # Fall back to environment variables (for local development)
-        return os.getenv(key, default_value)
+        value = os.getenv(key, default_value)
+        logger.info(f"⚠️ Using environment variable for {key} (length: {len(str(value)) if value else 0})")
+        return value
+
+def debug_configuration():
+    """Debug function to check configuration in Streamlit Cloud"""
+    st.write("### 🔍 Configuration Debug Info")
+    
+    config_items = [
+        'JIRA_BASE_URL', 'JIRA_AUTH_TOKEN', 'GEMINI_API_KEY',
+        'APP_VERSION', 'APP_NAME', 'DEFAULT_JQL_QUERY'
+    ]
+    
+    for item in config_items:
+        try:
+            # Check Streamlit secrets
+            if hasattr(st, 'secrets') and item in st.secrets:
+                value = st.secrets[item]
+                display_value = f"{value[:10]}...{value[-10:]}" if len(str(value)) > 20 else str(value)
+                st.write(f"✅ **{item}**: Found in secrets - `{display_value}` (length: {len(str(value))})")
+            else:
+                # Check environment
+                env_value = os.getenv(item, 'Not found')
+                display_value = f"{env_value[:10]}...{env_value[-10:]}" if len(str(env_value)) > 20 else str(env_value)
+                st.write(f"⚠️ **{item}**: From environment - `{display_value}`")
+        except Exception as e:
+            st.write(f"❌ **{item}**: Error - {e}")
 
 APP_NAME = get_config_value('APP_NAME', 'JIRA Data Analyzer')
 APP_VERSION = get_config_value('APP_VERSION', '1.0.1')
@@ -1018,6 +1046,12 @@ with st.sidebar:
                     st.info("👆 Click 'Refresh Available Models' to load Gemini models")
             else:
                 st.warning("⚠️ Set GEMINI_API_KEY environment variable")
+    
+    st.markdown("---")
+    
+    # Debug section for troubleshooting deployment
+    with st.expander("🔍 Debug Configuration (Troubleshooting)"):
+        debug_configuration()
     
     st.markdown("---")
     load_button = st.button("🚀 Analyze JIRA Data", type="primary", use_container_width=True)
