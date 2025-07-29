@@ -15,6 +15,13 @@ import google.generativeai as genai
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder
 
+# ---------------------------------
+# Logging Setup (moved up to be available early)
+# ---------------------------------
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Try to load environment variables from .env file (optional dependency)
 try:
     from dotenv import load_dotenv
@@ -89,11 +96,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# ---------------------------------
-# Logging Setup
-# ---------------------------------
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # ---------------------------------
 # JIRA API configuration and functions
