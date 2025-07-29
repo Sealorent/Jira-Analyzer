@@ -92,12 +92,18 @@ celerybeat-schedule
 
 # Environments
 .env
+.env.local
+.env.production
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Streamlit secrets (keep template, ignore actual secrets)
+.streamlit/secrets.toml.local
+.streamlit/secrets.toml.production
 
 # Spyder project settings
 .spyderproject

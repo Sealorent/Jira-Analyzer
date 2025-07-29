@@ -1,6 +1,7 @@
 """
-JIRA Data Analyzer v1.0.0
+JIRA Data Analyzer v1.0.1
 Enterprise-grade JIRA project analytics and team performance tracking
+New in v1.0.1: Date range filtering and advanced analytics features
 """
 
 import streamlit as st
@@ -24,14 +25,32 @@ except ImportError:
     print("💡 To use .env file, install: pip install python-dotenv")
 
 # ---------------------------------
-# Configuration from Environment Variables
+# Configuration from Environment Variables and Streamlit Secrets
 # ---------------------------------
-APP_NAME = os.getenv('APP_NAME', 'JIRA Data Analyzer')
-APP_VERSION = os.getenv('APP_VERSION', '1.0.0')
-JIRA_BASE_URL = os.getenv('JIRA_BASE_URL', '')
-JIRA_AUTH_TOKEN = os.getenv('JIRA_AUTH_TOKEN', '')
-DEFAULT_JQL_QUERY = os.getenv('DEFAULT_JQL_QUERY', 'labels IN (July2025)')
-MAX_RESULTS_DEFAULT = int(os.getenv('MAX_RESULTS_DEFAULT', '300'))
+def get_config_value(key, default_value=''):
+    """Get configuration value from Streamlit secrets or environment variables"""
+    # Try Streamlit secrets first (for cloud deployment)
+    try:
+        return st.secrets[key]
+    except (KeyError, AttributeError):
+        # Fall back to environment variables (for local development)
+        return os.getenv(key, default_value)
+
+APP_NAME = get_config_value('APP_NAME', 'JIRA Data Analyzer')
+APP_VERSION = get_config_value('APP_VERSION', '1.0.1')
+JIRA_BASE_URL = get_config_value('JIRA_BASE_URL', 'https://one-employee.atlassian.net/rest/api/3/')
+JIRA_AUTH_TOKEN = get_config_value('JIRA_AUTH_TOKEN', '')
+DEFAULT_JQL_QUERY = get_config_value('DEFAULT_JQL_QUERY', 'labels IN (July2025)')
+MAX_RESULTS_DEFAULT = int(get_config_value('MAX_RESULTS_DEFAULT', '300'))
+
+# v1.0.1 Feature Flags and Configuration
+ENABLE_DATE_RANGE_FILTERING = get_config_value('ENABLE_DATE_RANGE_FILTERING', 'true').lower() == 'true'
+ENABLE_ADVANCED_ANALYTICS = get_config_value('ENABLE_ADVANCED_ANALYTICS', 'true').lower() == 'true'
+DEFAULT_FROM_MONTH = get_config_value('DEFAULT_FROM_MONTH', 'July2025')
+DEFAULT_TO_MONTH = get_config_value('DEFAULT_TO_MONTH', 'July2025')
+
+# Version check for backward compatibility
+IS_VERSION_101 = APP_VERSION.startswith('1.0.1')
 
 # ---------------------------------
 # Page configuration
@@ -247,8 +266,8 @@ def get_total_effective_days(month_labels=None, month_configs=None):
             "June2025": {"total_days": 30, "weekends": 8, "holidays": 1},     # 21 working days
             "July2025": {"total_days": 31, "weekends": 8, "holidays": 0},     # 23 working days (verified by user research)
             "August2025": {"total_days": 31, "weekends": 8, "holidays": 1},   # 22 working days
-            "September2025": {"total_days": 30, "weekends": 8, "holidays": 0}, # 22 working days
-            "October2025": {"total_days": 31, "weekends": 9, "holidays": 0}    # 22 working days
+            "September2025": {"total_days": 30, "weekends": 8, "holidays": 0}, # 30 - 8 weekends - 0 holidays = 22 working days
+            "October2025": {"total_days": 31, "weekends": 9, "holidays": 0}    # 31 - 9 weekends - 0 holidays = 22 working days
         }
     
     # If no specific months provided, use all configured months
@@ -411,7 +430,7 @@ def calculate_carry_over_by_month(df):
     return result.reset_index().rename(columns={'month': 'Month'})
 
 def get_jira_data(jql_query, field_set='summary', max_results=300):
-    """Fetch data from JIRA using JQL query"""
+    """Fetch data from JIRA using JQL query with pagination to get all results"""
     logger.info(f"Fetching JIRA data with JQL: {jql_query}")
     
     url = JIRA_BASE_URL + "search"
@@ -421,24 +440,62 @@ def get_jira_data(jql_query, field_set='summary', max_results=300):
         'Accept': 'application/json'
     }
     
-    params = {
-        'jql': jql_query,
-        'fields': JIRA_FIELDS_OPTIONS[field_set],
-        'maxResults': max_results,
-    }
+    all_issues = []
+    start_at = 0
+    max_results_per_page = 100  # JIRA's default page size
+    total_retrieved = 0
     
     try:
-        response = requests.get(url, params=params, headers=headers)
-        logger.info(f"JIRA API response status: {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            logger.info(f"Retrieved {len(data.get('issues', []))} JIRA issues")
-            return data
-        else:
-            logger.error(f"JIRA API error: {response.status_code} - {response.text}")
-            raise Exception(f"JIRA API error: {response.status_code} - {response.text}")
+        while True:
+            params = {
+                'jql': jql_query,
+                'fields': JIRA_FIELDS_OPTIONS[field_set],
+                'maxResults': max_results_per_page,
+                'startAt': start_at
+            }
             
+            logger.info(f"Fetching page starting at {start_at} (retrieved {total_retrieved} so far)")
+            response = requests.get(url, params=params, headers=headers)
+            logger.info(f"JIRA API response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                issues = data.get('issues', [])
+                total_issues = data.get('total', 0)
+                
+                if not issues:
+                    # No more issues to fetch
+                    logger.info("No more issues returned, pagination complete")
+                    break
+                
+                all_issues.extend(issues)
+                total_retrieved += len(issues)
+                
+                logger.info(f"Retrieved {len(issues)} issues in this page (total: {total_retrieved}/{total_issues})")
+                
+                # Check if we've retrieved all issues or hit our limit
+                if len(issues) < max_results_per_page or total_retrieved >= max_results or total_retrieved >= total_issues:
+                    logger.info(f"Pagination complete. Retrieved {total_retrieved} total issues")
+                    break
+                
+                # Move to next page
+                start_at += max_results_per_page
+                
+            else:
+                logger.error(f"JIRA API error: {response.status_code} - {response.text}")
+                raise Exception(f"JIRA API error: {response.status_code} - {response.text}")
+        
+        # Create final response with all issues
+        final_response = {
+            'issues': all_issues,
+            'total': len(all_issues),
+            'startAt': 0,
+            'maxResults': len(all_issues)
+        }
+        
+        logger.info(f"Successfully retrieved {len(all_issues)} total JIRA issues")
+        return final_response
+        
     except Exception as e:
         logger.error(f"Error fetching JIRA data: {e}")
         raise
@@ -681,10 +738,10 @@ class JiraMLModel:
 
 def setup_gemini():
     """Setup Gemini AI"""
-    # You'll need to set your Gemini API key as an environment variable
-    api_key = os.getenv('GEMINI_API_KEY', 'AIzaSyAkETc5NO5jRpDcNBoXq2M1L1cWZcp4tp8')
+    # Get Gemini API key from Streamlit secrets or environment variables
+    api_key = get_config_value('GEMINI_API_KEY', 'AIzaSyAkETc5NO5jRpDcNBoXq2M1L1cWZcp4tp8')
     if not api_key:
-        logger.warning("GEMINI_API_KEY not found in environment variables")
+        logger.warning("GEMINI_API_KEY not found in configuration")
         return False
     
     genai.configure(api_key=api_key)
@@ -776,6 +833,20 @@ def generate_jira_insights(df, predictions_summary, selected_model=None):
 # ---------------------------------
 with st.sidebar:
     st.header(f"{APP_NAME} v{APP_VERSION}")
+    
+    # Version indicator and features
+    if IS_VERSION_101:
+        st.success("🆕 **v1.0.1 Features Active**")
+        if ENABLE_DATE_RANGE_FILTERING:
+            st.write("✅ Date Range Filtering")
+        if ENABLE_ADVANCED_ANALYTICS:
+            st.write("✅ Advanced Analytics")
+        st.info("💡 To switch to v1.0.0, change APP_VERSION in .env file")
+    else:
+        st.info("📋 **v1.0.0 Stable Version**")
+        st.write("✅ Core JIRA Analytics")
+        st.write("💡 To enable v1.0.1 features, change APP_VERSION to '1.0.1' in .env file")
+    
     st.markdown("---")
     st.header("Configuration")
     
@@ -831,10 +902,61 @@ with st.sidebar:
         
         st.markdown("---")
         
-        # JQL Query input
-        base_jql = st.text_area("Base JQL Query",
-                               value=DEFAULT_JQL_QUERY, height=100,
-                               help="Enter your JQL query. Assignee filter will be added automatically.")
+        # v1.0.1 Date Range Features (if enabled)
+        if IS_VERSION_101 and ENABLE_DATE_RANGE_FILTERING:
+            st.subheader("📅 Date Range Configuration (v1.0.1)")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                from_month = st.selectbox(
+                    "From Month",
+                    ["January2025", "February2025", "March2025", "April2025", "May2025",
+                     "June2025", "July2025", "August2025", "September2025", "October2025",
+                     "November2025", "December2025"],
+                    index=6,  # July2025
+                    help="Select the starting month for data analysis"
+                )
+            
+            with col2:
+                to_month = st.selectbox(
+                    "To Month",
+                    ["January2025", "February2025", "March2025", "April2025", "May2025",
+                     "June2025", "July2025", "August2025", "September2025", "October2025",
+                     "November2025", "December2025"],
+                    index=6,  # July2025
+                    help="Select the ending month for data analysis"
+                )
+            
+            # Generate date range JQL query
+            if from_month == to_month:
+                generated_jql = f"labels IN ({from_month})"
+            else:
+                # Get month index for range
+                months = ["January2025", "February2025", "March2025", "April2025", "May2025",
+                         "June2025", "July2025", "August2025", "September2025", "October2025",
+                         "November2025", "December2025"]
+                from_idx = months.index(from_month)
+                to_idx = months.index(to_month)
+                
+                if from_idx <= to_idx:
+                    month_range = months[from_idx:to_idx+1]
+                else:
+                    month_range = months[from_idx:] + months[:to_idx+1]
+                
+                month_labels = ", ".join(month_range)
+                generated_jql = f"labels IN ({month_labels})"
+            
+            st.info(f"🔄 Generated JQL: `{generated_jql}`")
+            
+            # JQL Query input with generated value
+            base_jql = st.text_area("Base JQL Query",
+                                   value=generated_jql, height=100,
+                                   help="Auto-generated based on date range selection. You can modify this query.")
+        else:
+            # v1.0.0 behavior - single query input
+            base_jql = st.text_area("Base JQL Query",
+                                   value=DEFAULT_JQL_QUERY, height=100,
+                                   help="Enter your JQL query. Assignee filter will be added automatically.")
         
         # Generate final JQL with assignees and issue types
         if selected_assignees:
@@ -854,7 +976,7 @@ with st.sidebar:
         # Analysis Options
         st.subheader("Analysis Options")
         field_set = st.selectbox("Field Set", list(JIRA_FIELDS_OPTIONS.keys()), index=1)
-        max_results = st.number_input("Max Results", min_value=1, max_value=1000, value=MAX_RESULTS_DEFAULT)
+        max_results = st.number_input("Max Results", min_value=1, max_value=100000, value=MAX_RESULTS_DEFAULT)
         
         st.markdown("---")
         
@@ -863,7 +985,7 @@ with st.sidebar:
         enable_ai = st.checkbox("Enable AI Insights (Gemini)", value=True)
         
         if enable_ai:
-            gemini_key = os.getenv('GEMINI_API_KEY', 'AIzaSyAkETc5NO5jRpDcNBoXq2M1L1cWZcp4tp8')
+            gemini_key = get_config_value('GEMINI_API_KEY', 'AIzaSyAkETc5NO5jRpDcNBoXq2M1L1cWZcp4tp8')
             if gemini_key:
                 st.success("✅ Gemini AI configured")
                 
@@ -1483,6 +1605,7 @@ if load_button:
                 # Display AI insights
                 if enable_ai and 'ai_insights' in locals():
                     st.header("🤖 AI-Generated Insights")
+                   
                     st.markdown(ai_insights)
                 
             except Exception as e:
